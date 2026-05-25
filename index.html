@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>agent-dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:        #0a0a0a;
+    --fg:        #f4f4f4;
+    --fg-dim:    #a3a3a3;
+    --fg-faint:  #6b6b6b;
+    --card:      #161616;
+    --card-line: #2a2a2a;
+    --mono:      ui-monospace, "SF Mono", Menlo, monospace;
+    --sans:      -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+    /* Safe-area helpers: on Dynamic-Island iPhones in landscape, the camera
+       cutout is on the LEFT or RIGHT, not the top. Inset all four sides. */
+    --sa-t: env(safe-area-inset-top);
+    --sa-r: env(safe-area-inset-right);
+    --sa-b: env(safe-area-inset-bottom);
+    --sa-l: env(safe-area-inset-left);
+  }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    overflow-x: hidden;
+  }
+
+  /* ── header ─────────────────────────────────────────────────────── */
+  header {
+    padding:
+      max(16px, var(--sa-t))
+      max(22px, var(--sa-r))
+      14px
+      max(22px, var(--sa-l));
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid #222;
+    background: rgba(10,10,10,0.92);
+    backdrop-filter: blur(8px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 {
+    font-size: 15px; font-weight: 500;
+    letter-spacing: 0.05em; color: #fff;
+    text-transform: lowercase;
+    font-family: var(--mono);
+  }
+  header .conn {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--fg-dim); font-size: 13px; letter-spacing: 0.05em;
+    text-transform: lowercase; font-family: var(--mono);
+  }
+  header .conn::before {
+    content: ""; width: 9px; height: 9px; border-radius: 50%;
+    background: #666; transition: background 200ms;
+  }
+  header .conn.ok::before  { background: #34d399; }
+  header .conn.bad::before { background: #f87171; }
+
+  /* ── tiles grid (multi-session default) ─────────────────────────── */
+  main {
+    padding:
+      16px
+      max(16px, var(--sa-r))
+      calc(16px + var(--sa-b))
+      max(16px, var(--sa-l));
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 14px;
+  }
+  main.solo {
+    grid-template-columns: 1fr;
+    place-content: start center;
+    padding:
+      36px
+      max(24px, var(--sa-r))
+      calc(36px + var(--sa-b))
+      max(24px, var(--sa-l));
+  }
+  main.solo .tile {
+    width: 100%;
+    max-width: 680px;
+    min-height: 60vh;
+    padding: 32px 32px 26px;
+  }
+
+  /* ── tile ───────────────────────────────────────────────────────── */
+  .tile {
+    background: var(--card);
+    border: 1px solid var(--card-line);
+    border-left-width: 6px;
+    border-radius: 12px;
+    padding: 20px 22px 18px;
+    min-height: 150px;
+    display: flex; flex-direction: column;
+    gap: 12px;
+    transition: border-color 250ms, background 250ms;
+  }
+
+  .tile .head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 14px;
+  }
+  .tile .title {
+    font-size: 20px; font-weight: 600;
+    color: var(--fg); line-height: 1.2;
+    word-break: break-word;
+  }
+  main.solo .tile .title { font-size: 32px; line-height: 1.15; }
+
+  .tile .badge {
+    font-size: 13px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    white-space: nowrap;
+    font-family: var(--mono);
+    flex-shrink: 0;
+  }
+  main.solo .tile .badge { font-size: 18px; }
+
+  .tile .cwd {
+    font-family: var(--mono);
+    font-size: 14px; color: var(--fg-dim);
+    word-break: break-all; line-height: 1.4;
+  }
+  main.solo .tile .cwd { font-size: 16px; }
+
+  .tile .message {
+    margin-top: 4px;
+    padding: 12px 14px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 8px;
+    font-size: 15px; line-height: 1.45;
+    color: #e8e8e8;
+    border-left: 3px solid currentColor;
+    opacity: 0.94;
+  }
+  main.solo .tile .message { font-size: 17px; padding: 16px 18px; }
+
+  .tile .foot {
+    margin-top: auto;
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 13px; color: var(--fg-faint);
+    font-family: var(--mono);
+    gap: 12px;
+  }
+  main.solo .tile .foot { font-size: 15px; }
+  .tile .foot .left { display: inline-flex; gap: 12px; align-items: baseline; }
+  .tile .foot .id { color: #555; }
+
+  /* ── state palette (Tailwind 300/400 — brighter than the old 500s) ── */
+  .state-idle              { border-left-color: #737373; }
+  .state-idle .badge       { color: #d4d4d4; }
+
+  .state-thinking          { border-left-color: #22d3ee; }
+  .state-thinking .badge   { color: #67e8f9; }
+
+  .state-tool_use          { border-left-color: #facc15; }
+  .state-tool_use .badge   { color: #fde047; }
+
+  .state-idle_waiting      { border-left-color: #fbbf24; background: #2a1d08; }
+  .state-idle_waiting .badge { color: #fcd34d; }
+
+  .state-notification      { border-left-color: #fb923c; }
+  .state-notification .badge { color: #fdba74; }
+
+  .state-awaiting_approval { border-left-color: #c084fc; background: #2a1745; }
+  .state-awaiting_approval .badge { color: #e9d5ff; }
+
+  .state-done              { border-left-color: #34d399; }
+  .state-done .badge       { color: #6ee7b7; }
+
+  .state-error             { border-left-color: #f87171; }
+  .state-error .badge      { color: #fca5a5; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.55; }
+  }
+  .state-thinking .badge,
+  .state-tool_use .badge,
+  .state-idle_waiting .badge,
+  .state-awaiting_approval .badge {
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .empty {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 64px 16px;
+    color: var(--fg-faint);
+    font-size: 13px;
+    font-family: var(--mono);
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>agent-dashboard</h1>
+    <span id="conn" class="conn">connecting…</span>
+  </header>
+  <main id="tiles">
+    <div class="empty">waiting for activity…</div>
+  </main>
+
+<script>
+const tilesEl = document.getElementById("tiles");
+const connEl  = document.getElementById("conn");
+
+const STATE_LABEL = {
+  idle:              "idle",
+  thinking:          "thinking",
+  tool_use:          "tool",
+  idle_waiting:      "your turn",
+  notification:      "notification",
+  awaiting_approval: "approval needed",
+  done:              "done",
+  error:             "error",
+};
+
+// After this long in "your turn", the tile auto-decays to idle (grey, no
+// pulse) so it stops nagging. Server state is unchanged — purely visual.
+const YOUR_TURN_TTL_MS = 5 * 60 * 1000;
+
+// When server flips a session to tool_use, hold its PREVIOUS state on screen
+// for this long. If awaiting_approval arrives within the window, we skip
+// rendering tool_use entirely — kills the tool→approval flicker that comes
+// from Claude Code firing PreToolUse a beat before the approval Notification.
+const TOOL_USE_DEBOUNCE_MS = 600;
+const prevServerState = {};   // sid -> last server state we saw
+const stateOverride   = {};   // sid -> { showState, until }
+
+let lastState = null;
+let backoff = 500;
+
+function fmtElapsed(iso) {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60)   return s + "s";
+  if (s < 3600) return Math.floor(s/60) + "m" + String(s%60).padStart(2,"0") + "s";
+  return Math.floor(s/3600) + "h" + String(Math.floor((s%3600)/60)).padStart(2,"0") + "m";
+}
+
+function projectName(cwd) {
+  if (!cwd) return "(unknown)";
+  const parts = cwd.replace(/\/+$/, "").split("/").filter(Boolean);
+  return parts[parts.length - 1] || "/";
+}
+
+function prettyCwd(p) {
+  if (!p) return "";
+  const home = "/Users/";
+  if (p.startsWith(home)) {
+    const rest = p.slice(home.length).split("/").slice(1).join("/");
+    return rest ? "~/" + rest : "~";
+  }
+  return p;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function applyDebounce(serverState) {
+  const sessions = (serverState && serverState.sessions) || {};
+  const now = Date.now();
+  for (const [sid, s] of Object.entries(sessions)) {
+    const prev = prevServerState[sid];
+    if (s.state === "tool_use" && prev && prev !== "tool_use") {
+      stateOverride[sid] = { showState: prev, until: now + TOOL_USE_DEBOUNCE_MS };
+      setTimeout(() => {
+        const ov = stateOverride[sid];
+        if (ov && Date.now() >= ov.until) {
+          delete stateOverride[sid];
+          if (lastState) render(lastState);
+        }
+      }, TOOL_USE_DEBOUNCE_MS + 20);
+    } else if (s.state !== "tool_use") {
+      delete stateOverride[sid];
+    }
+    prevServerState[sid] = s.state;
+  }
+}
+
+function render(state) {
+  lastState = state;
+  const sessions = Object.values((state && state.sessions) || {});
+  sessions.sort((a, b) => (b.last_event_at || "").localeCompare(a.last_event_at || ""));
+
+  if (sessions.length === 0) {
+    tilesEl.className = "";
+    tilesEl.innerHTML = '<div class="empty">no active sessions — start using claude code</div>';
+    return;
+  }
+
+  tilesEl.className = sessions.length === 1 ? "solo" : "";
+
+  tilesEl.innerHTML = sessions.map(s => {
+    const id      = (s.session_id || "??").slice(0, 8);
+    const ov      = stateOverride[s.session_id];
+    const rawSt   = (ov && Date.now() < ov.until ? ov.showState : (s.state || "idle"));
+    let   st      = rawSt.replace(/\s+/g, "_");
+    // If we've been "your turn" for too long, visually decay to idle.
+    if (st === "idle_waiting" && s.state_since &&
+        (Date.now() - new Date(s.state_since).getTime()) > YOUR_TURN_TTL_MS) {
+      st = "idle";
+    }
+    const label   = STATE_LABEL[st] || st.replace(/_/g, " ");
+    // Prefer Claude's auto-generated ai-title (from the session jsonl) over
+    // the bare cwd basename. Falls back to basename when no title yet.
+    const title   = escapeHtml(s.title || projectName(s.cwd));
+    const cwd     = escapeHtml(prettyCwd(s.cwd));
+    // Bottom-right timer: time elapsed since the *state* last changed (not
+    // since the session started, not since the last event of any kind).
+    const elapsed = fmtElapsed(s.state_since || s.last_event_at || s.started_at);
+    const tool    = escapeHtml(s.last_tool || s.last_event || "");
+    const message = s.message ? escapeHtml(s.message) : "";
+
+    return `
+      <div class="tile state-${st}">
+        <div class="head">
+          <div class="title">${title}</div>
+          <div class="badge">${label}</div>
+        </div>
+        <div class="cwd">${cwd}</div>
+        ${message ? `<div class="message">${message}</div>` : ""}
+        <div class="foot">
+          <div class="left">
+            <span class="tool">${tool}</span>
+            <span class="id">${id}</span>
+          </div>
+          <span class="time">${elapsed}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+setInterval(() => { if (lastState) render(lastState); }, 1000);
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(proto + "//" + location.host + "/ws");
+
+  ws.onopen = () => {
+    connEl.classList.remove("bad");
+    connEl.classList.add("ok");
+    connEl.textContent = "connected";
+    backoff = 500;
+  };
+  ws.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "state") {
+        applyDebounce(msg.data);
+        render(msg.data);
+      }
+    } catch (_) {}
+  };
+  ws.onclose = () => {
+    connEl.classList.remove("ok");
+    connEl.classList.add("bad");
+    connEl.textContent = "reconnecting…";
+    setTimeout(connect, backoff);
+    backoff = Math.min(backoff * 2, 8000);
+  };
+  ws.onerror = () => { try { ws.close(); } catch (_) {} };
+}
+
+connect();
+</script>
+</body>
+</html>
