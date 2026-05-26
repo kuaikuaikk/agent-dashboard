@@ -4,7 +4,7 @@ description: Generate a new agent-dashboard pairing QR (auto-opens in Safari)
 
 Run exactly this command, then briefly confirm to the user:
 
-!`${CLAUDE_PLUGIN_ROOT}/.venv/bin/python ${CLAUDE_PLUGIN_ROOT}/daemon.py --pair`
+!`${CLAUDE_PLUGIN_ROOT}/python.sh ${CLAUDE_PLUGIN_ROOT}/daemon.py --pair`
 
 After running:
 - Report only the **device id** that was created (one short line).
