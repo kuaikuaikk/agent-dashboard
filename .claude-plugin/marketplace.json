@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "agent-dashboard",
-      "source": ".",
+      "source": "./.claude-plugin",
       "description": "Glanceable real-time dashboard for Claude Code sessions — turn an old phone into an ambient status display on your LAN."
     }
   ]

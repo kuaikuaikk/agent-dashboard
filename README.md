@@ -36,14 +36,25 @@ Requires: Python 3.11+ on PATH.
 
 ```bash
 git clone https://github.com/kuaikuaikk/agent-dashboard
-cd agent-dashboard
+cd agent-dashboard/.claude-plugin
 python3 -m venv .venv
 .venv/bin/pip install aiohttp qrcode
 chmod +x hook.sh
 ```
 
-Then merge `hooks/hooks.json` into your `~/.claude/settings.json` by hand
-(replace `${CLAUDE_PLUGIN_ROOT}` with the absolute path to this directory).
+Then merge `.claude-plugin/hooks/hooks.json` into your
+`~/.claude/settings.json` by hand (replace `${CLAUDE_PLUGIN_ROOT}` with
+the absolute path to the `.claude-plugin/` directory).
+
+For *local plugin development* (live-edit), symlink the repo into the
+marketplaces dir instead of installing:
+
+```bash
+ln -s "$(pwd)" ~/.claude/plugins/marketplaces/agent-dashboard
+```
+
+Now edits in this repo are picked up as if the plugin were installed
+normally — no `/plugin update` needed.
 
 ## Pair a device
 
@@ -99,20 +110,21 @@ lock the phone to this page.
 
 ## Plugin layout
 
+All plugin assets live under `.claude-plugin/` (Claude Code's `source`
+field points there). README/LICENSE stay at the repo root.
+
 ```
 agent-dashboard/
 ├── .claude-plugin/
-│   ├── plugin.json        # manifest
-│   └── marketplace.json   # so `/plugin marketplace add` finds the plugin
-├── hooks/
-│   └── hooks.json         # auto-wires 7 hook events to hook.sh
-├── commands/
-│   └── pair.md            # /pair slash command
-├── daemon.py              # hook handler + server + pair/list/revoke CLI
-├── hook.sh                # auto-bootstraps venv, then execs daemon.py --hook
-├── index.html             # single-file frontend (no build step)
-├── devices.json           # paired-device list (token hashes; gitignored)
-├── .venv/                 # local Python env (gitignored)
+│   ├── plugin.json         # manifest
+│   ├── marketplace.json    # so `/plugin marketplace add` finds the plugin
+│   ├── hooks/hooks.json    # auto-wires 7 hook events to hook.sh
+│   ├── commands/pair.md    # /pair slash command (invoked as `/agent-dashboard:pair`)
+│   ├── daemon.py           # hook handler + server + pair/list/revoke CLI
+│   ├── hook.sh             # auto-bootstraps venv, then execs daemon.py --hook
+│   ├── index.html          # single-file frontend
+│   ├── devices.json        # paired-device list (token hashes; gitignored)
+│   └── .venv/              # local Python env (gitignored)
 ├── LICENSE
 └── README.md
 ```
