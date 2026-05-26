@@ -178,6 +178,7 @@ def create_device(name: str | None = None) -> tuple[str, str]:
             "created_at":    _now_iso(),
             "last_seen_at":  None,
             "pending_until": pending_until,
+            "consumed_at":   None,
             "user_agent":    None,
         })
         save_devices(data)
@@ -193,6 +194,35 @@ def find_device_by_token(plain: str) -> dict | None:
         if stored and secrets.compare_digest(stored, h):
             return d
     return None
+
+
+def try_consume_token(plain: str, user_agent: str | None) -> tuple[dict | None, str]:
+    """Atomic check-and-mark for first-time pairing. Returns (device, status):
+      ("ok",       device)  — token was valid and unused; consumed_at just set
+      ("used",     device)  — token matches but was already consumed
+      ("unknown",  None)    — token doesn't match anything
+    The lock is held across the read + write, so two concurrent /auth?token=X
+    requests can never both observe consumed_at=None."""
+    if not plain:
+        return None, "unknown"
+    h = _hash_token(plain)
+    with devices_lock():
+        data = load_devices()
+        for d in data.get("devices", []):
+            stored = d.get("token_hash", "")
+            if stored and secrets.compare_digest(stored, h):
+                if d.get("consumed_at"):
+                    return d, "used"
+                d["consumed_at"]   = _now_iso()
+                d["pending_until"] = None
+                d["last_seen_at"]  = _now_iso()
+                if user_agent and d.get("name") == "(pending pair)":
+                    d["name"] = parse_ua(user_agent)
+                if user_agent and not d.get("user_agent"):
+                    d["user_agent"] = user_agent
+                save_devices(data)
+                return d, "ok"
+    return None, "unknown"
 
 
 def update_last_seen(device_id: str, user_agent: str | None) -> None:
@@ -243,6 +273,23 @@ def cleanup_devices() -> list[dict]:
             data["devices"] = kept
             save_devices(data)
     return removed
+
+
+def backfill_consumed_at() -> int:
+    """One-time migration for devices created before consumed_at existed.
+    Any device that has a last_seen_at (i.e., was successfully paired in the
+    past) but no consumed_at is treated as already-consumed — backfilled so
+    its old /auth URL cannot be re-used. Safe to call on every startup."""
+    n = 0
+    with devices_lock():
+        data = load_devices()
+        for d in data.get("devices", []):
+            if not d.get("consumed_at") and d.get("last_seen_at"):
+                d["consumed_at"] = d["last_seen_at"]
+                n += 1
+        if n:
+            save_devices(data)
+    return n
 
 
 def revoke_device_by_prefix(prefix: str) -> dict | None:
@@ -560,6 +607,9 @@ async def daemon_main() -> None:
     log.info("daemon starting pid=%d", os.getpid())
 
     migrate_legacy_token()  # fold any existing shared token into devices.json
+    n = backfill_consumed_at()
+    if n:
+        log.info("backfilled consumed_at on %d pre-existing device(s)", n)
 
     @web.middleware
     async def auth_middleware(request, handler):
@@ -568,7 +618,19 @@ async def daemon_main() -> None:
             return await handler(request)
         cookie = request.cookies.get(COOKIE_NAME, "")
         query  = request.query.get("token", "")
-        device = find_device_by_token(cookie) or find_device_by_token(query)
+        device = find_device_by_token(cookie)
+        if not device and query:
+            # Query-token fallback: only allowed for the pair-status read endpoint
+            # (which has its own device_id+token check) OR for not-yet-consumed
+            # tokens. Prevents a leaked URL from working after the phone scanned.
+            candidate = find_device_by_token(query)
+            if candidate:
+                is_status_endpoint = (
+                    request.path.startswith("/api/pair/")
+                    and request.path.endswith("/status")
+                )
+                if is_status_endpoint or not candidate.get("consumed_at"):
+                    device = candidate
         if device:
             ua = request.headers.get("User-Agent", "")
             asyncio.create_task(asyncio.to_thread(update_last_seen, device["id"], ua))
@@ -580,9 +642,12 @@ async def daemon_main() -> None:
 
     async def handle_auth(request):
         token = request.query.get("token", "")
-        device = find_device_by_token(token)
-        if not device:
+        ua    = request.headers.get("User-Agent", "")
+        device, status = await asyncio.to_thread(try_consume_token, token, ua)
+        if status == "unknown":
             return web.Response(status=401, text="invalid or unknown token")
+        if status == "used":
+            return web.Response(status=403, text="this pairing link has already been used — generate a new one with `daemon.py --pair`")
         resp = web.HTTPFound("/")
         resp.set_cookie(
             COOKIE_NAME, token,
@@ -591,10 +656,29 @@ async def daemon_main() -> None:
             samesite="Lax",
             path="/",
         )
-        asyncio.create_task(asyncio.to_thread(
-            update_last_seen, device["id"], request.headers.get("User-Agent", "")
-        ))
         return resp
+
+    async def handle_pair_status(request):
+        device_id = request.match_info.get("device_id", "")
+        token     = request.query.get("token", "")
+        if not token:
+            return web.json_response({"error": "token required"}, status=400,
+                                     headers={"Access-Control-Allow-Origin": "*"})
+        h = _hash_token(token)
+        for d in load_devices().get("devices", []):
+            if d.get("id") == device_id and secrets.compare_digest(d.get("token_hash", ""), h):
+                return web.json_response(
+                    {
+                        "device_id":    d["id"],
+                        "consumed":     bool(d.get("consumed_at")),
+                        "consumed_at":  d.get("consumed_at"),
+                        "user_agent":   d.get("user_agent"),
+                        "name":         d.get("name"),
+                    },
+                    headers={"Access-Control-Allow-Origin": "*"},
+                )
+        return web.json_response({"error": "unknown device or wrong token"}, status=404,
+                                 headers={"Access-Control-Allow-Origin": "*"})
 
     clients: set = set()
     index_path = Path(__file__).parent / "index.html"
@@ -649,6 +733,7 @@ async def daemon_main() -> None:
     app.router.add_get("/",          handle_index)
     app.router.add_get("/auth",      handle_auth)
     app.router.add_get("/api/state", handle_state_api)
+    app.router.add_get("/api/pair/{device_id}/status", handle_pair_status)
     app.router.add_get("/ws",        handle_ws)
 
     runner = web.AppRunner(app)
@@ -742,25 +827,64 @@ def pair_main(name: str | None = None) -> None:
     qr_data_uri = f"data:image/svg+xml;base64,{svg_b64}"
 
     html_path = Path(f"/tmp/agent-dashboard-pair-{device_id}.html")
+    status_url = f"{base}/api/pair/{device_id}/status?token={token}"
     html_path.write_text(f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>pair {device_id}</title>
 <style>
   body {{ background:#fff; color:#222; font-family:-apple-system,system-ui,sans-serif;
-         display:flex; flex-direction:column; align-items:center; padding:32px; gap:18px; }}
+         display:flex; flex-direction:column; align-items:center; padding:32px; gap:18px;
+         transition: background 600ms ease; }}
+  body.paired {{ background:#f0fdf4; }}
   .qr {{ width:min(80vw, 480px); height:min(80vw, 480px);
         background:#fff; padding:16px; border-radius:12px;
         box-shadow:0 2px 12px rgba(0,0,0,0.08);
-        image-rendering: pixelated; }}
+        image-rendering: pixelated;
+        transition: opacity 400ms ease, transform 400ms ease; }}
+  body.paired .qr {{ opacity: 0; transform: scale(0.92); pointer-events: none; }}
   code {{ background:#f3f3f3; padding:6px 10px; border-radius:4px; font-size:12px;
-          word-break:break-all; max-width:90vw; line-height:1.4; }}
+          word-break:break-all; max-width:90vw; line-height:1.4;
+          transition: opacity 400ms ease; }}
+  body.paired code {{ opacity: 0.3; }}
   h1 {{ font-size:15px; font-weight:500; color:#555; margin:0; text-align:center; }}
   p  {{ color:#888; font-size:12px; margin:0; text-align:center; }}
+  #status {{ display:none; flex-direction:column; align-items:center; gap:8px;
+             padding:24px 32px; background:#fff; border-radius:12px;
+             box-shadow:0 2px 12px rgba(0,0,0,0.08); }}
+  body.paired #status {{ display:flex; }}
+  #status .check {{ font-size:48px; color:#16a34a; line-height:1; }}
+  #status .label {{ font-size:18px; font-weight:600; color:#222; }}
+  #status .ua    {{ font-size:12px; color:#888; max-width:60vw; text-align:center;
+                    word-break:break-word; line-height:1.5; }}
 </style></head>
 <body>
   <h1>pair this device — <b>{(name or f'device-{device_id[:4]}')}</b>  ·  id <code>{device_id}</code></h1>
   <img class="qr" src="{qr_data_uri}" alt="pairing QR">
+  <div id="status">
+    <div class="check">&#10003;</div>
+    <div class="label">paired</div>
+    <div class="ua" id="paired-ua"></div>
+  </div>
   <code>{url}</code>
-  <p>scan with your phone camera, or open the URL on the new device</p>
+  <p id="hint">scan with your phone camera, or open the URL on the new device</p>
+<script>
+const STATUS_URL = "{status_url}";
+async function poll() {{
+  try {{
+    const r = await fetch(STATUS_URL, {{cache: "no-store"}});
+    if (r.ok) {{
+      const j = await r.json();
+      if (j.consumed) {{
+        document.body.classList.add("paired");
+        document.getElementById("paired-ua").textContent = j.user_agent || "";
+        document.getElementById("hint").textContent = "this link is now spent — close this tab";
+        return;  // only consumed=true ends the poll loop; transient errors retry
+      }}
+    }}
+  }} catch (_) {{}}
+  setTimeout(poll, 2000);
+}}
+poll();
+</script>
 </body></html>""")
 
     # ASCII fallback (still print in case the user wants it inline)
