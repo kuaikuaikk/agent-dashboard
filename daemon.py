@@ -294,6 +294,36 @@ def get_lan_ip() -> str:
         s.close()
 
 
+def get_pair_base_url() -> str:
+    """Return the base URL to embed in pair QR codes.
+
+    Resolution order:
+    1. DASHBOARD_PUBLIC_URL env var (e.g., 'https://my.example.com')
+    2. Tailscale serve: if `tailscale serve` is proxying our local PORT over
+       HTTPS, use its tailnet hostname — gives a real Let's Encrypt cert and
+       therefore a secure context, which the iOS Wake Lock API requires.
+    3. Fallback: http://<lan-ip>:<PORT>
+    """
+    env = os.environ.get("DASHBOARD_PUBLIC_URL")
+    if env:
+        return env.rstrip("/")
+    try:
+        out = subprocess.run(
+            ["tailscale", "serve", "status", "--json"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            data = json.loads(out.stdout)
+            for hostport, cfg in (data.get("Web") or {}).items():
+                for _path, h in (cfg.get("Handlers") or {}).items():
+                    if h.get("Proxy", "").endswith(f":{PORT}"):
+                        host = hostport.rsplit(":", 1)[0]
+                        return f"https://{host}"
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError, FileNotFoundError):
+        pass
+    return f"http://{get_lan_ip()}:{PORT}"
+
+
 # ---------- transcript tailing (Claude Code's per-session jsonl) ----------
 #
 # Each Claude Code session writes a .jsonl transcript at the `transcript_path`
@@ -695,8 +725,8 @@ def pair_main(name: str | None = None) -> None:
 
     migrate_legacy_token()
     device_id, token = create_device(name)
-    ip  = get_lan_ip()
-    url = f"http://{ip}:{PORT}/auth?token={token}"
+    base = get_pair_base_url()
+    url  = f"{base}/auth?token={token}"
 
     # SVG QR (no Pillow needed). qrcode generates standalone-XML SVG with
     # namespace prefixes — incompatible with inline HTML embedding. Embed via
