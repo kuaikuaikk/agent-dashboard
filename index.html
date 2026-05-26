@@ -33,6 +33,13 @@
     -webkit-tap-highlight-color: transparent;
     overflow-x: hidden;
   }
+  /* AOD-style anti-burn-in: smooth brightness fades + 1-minute pixel-shift.
+     JS sets `filter` and `transform` on body; these transitions make the
+     change visually subtle. */
+  body {
+    transition: filter 1.5s ease, transform 1.5s ease;
+    will-change: filter, transform;
+  }
 
   /* ── header ─────────────────────────────────────────────────────── */
   header {
@@ -236,8 +243,79 @@ const TOOL_USE_DEBOUNCE_MS = 600;
 const prevServerState = {};   // sid -> last server state we saw
 const stateOverride   = {};   // sid -> { showState, until }
 
+// Keep the iPhone screen awake while there's recent activity. Released
+// automatically after WAKE_LOCK_IDLE_MS of no events so the phone can sleep
+// when nothing is happening. Requires iOS Safari 16.4+ (silent no-op otherwise).
+const WAKE_LOCK_IDLE_MS = 60 * 60 * 1000;   // 1h
+let wakeLock = null;
+const pageOpenedAt = Date.now();
+
+async function acquireWakeLock() {
+  if (wakeLock || !("wakeLock" in navigator)) return;
+  if (document.visibilityState !== "visible") return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+  } catch (_) { /* user-gesture / permission / page-hidden */ }
+}
+
+async function releaseWakeLock() {
+  if (!wakeLock) return;
+  const w = wakeLock; wakeLock = null;
+  try { await w.release(); } catch (_) {}
+}
+
+function lastActivityMs() {
+  let max = pageOpenedAt;
+  const sessions = (lastState && lastState.sessions) || {};
+  for (const s of Object.values(sessions)) {
+    if (s.last_event_at) {
+      const t = new Date(s.last_event_at).getTime();
+      if (t > max) max = t;
+    }
+  }
+  return max;
+}
+
+function manageWakeLock() {
+  if (document.visibilityState !== "visible") return;
+  const idleMs = Date.now() - lastActivityMs();
+  if (idleMs < WAKE_LOCK_IDLE_MS) acquireWakeLock();
+  else releaseWakeLock();
+}
+
+// AOD-style anti-burn-in: dim the screen after idle, and shift the whole
+// page by a few pixels every minute so static elements don't bake in.
+const BRIGHTNESS_DIM_MS  =  5 * 60 * 1000;   // mild dim after 5min idle
+const BRIGHTNESS_DEEP_MS = 30 * 60 * 1000;   // deep dim after 30min idle
+const PIXEL_SHIFT_MS     = 60 * 1000;        // re-randomize offset every 60s
+const SHIFT_RANGE_PX     = 2;                // offsets are in [-2, +2]
+
+let lastShiftAt = 0;
+let shiftX = 0, shiftY = 0;
+
+function manageAOD() {
+  if (document.visibilityState !== "visible") return;
+  const idleMs = Date.now() - lastActivityMs();
+  let brightness;
+  if      (idleMs < BRIGHTNESS_DIM_MS)  brightness = 1.0;
+  else if (idleMs < BRIGHTNESS_DEEP_MS) brightness = 0.4;
+  else                                  brightness = 0.1;
+
+  const now = Date.now();
+  if (now - lastShiftAt > PIXEL_SHIFT_MS) {
+    shiftX = Math.floor(Math.random() * (2 * SHIFT_RANGE_PX + 1)) - SHIFT_RANGE_PX;
+    shiftY = Math.floor(Math.random() * (2 * SHIFT_RANGE_PX + 1)) - SHIFT_RANGE_PX;
+    lastShiftAt = now;
+  }
+
+  document.body.style.filter    = brightness < 1.0 ? `brightness(${brightness})` : "";
+  document.body.style.transform = `translate(${shiftX}px, ${shiftY}px)`;
+}
+
 let lastState = null;
 let backoff = 500;
+let ws = null;
 
 function fmtElapsed(iso) {
   if (!iso) return "";
@@ -347,11 +425,15 @@ function render(state) {
   }).join("");
 }
 
-setInterval(() => { if (lastState) render(lastState); }, 1000);
+setInterval(() => {
+  if (lastState) render(lastState);
+  manageWakeLock();
+  manageAOD();
+}, 1000);
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(proto + "//" + location.host + "/ws");
+  ws = new WebSocket(proto + "//" + location.host + "/ws");
 
   ws.onopen = () => {
     connEl.classList.remove("bad");
@@ -365,6 +447,7 @@ function connect() {
       if (msg.type === "state") {
         applyDebounce(msg.data);
         render(msg.data);
+        manageWakeLock();
       }
     } catch (_) {}
   };
@@ -378,7 +461,21 @@ function connect() {
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
 }
 
+// iOS Safari pauses timers / drops the WS when the page is hidden, and
+// auto-releases the wake lock. Force-reconnect + re-acquire when visible.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  manageWakeLock();
+  manageAOD();
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    backoff = 500;
+    connect();
+  }
+});
+
 connect();
+manageWakeLock();
+manageAOD();
 </script>
 </body>
 </html>
