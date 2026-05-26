@@ -1,0 +1,14 @@
+{
+  "name": "agent-dashboard",
+  "owner": {
+    "name": "kuaikuaikk",
+    "url": "https://github.com/kuaikuaikk"
+  },
+  "plugins": [
+    {
+      "name": "agent-dashboard",
+      "source": "./.claude-plugin",
+      "description": "Glanceable real-time dashboard for Claude Code sessions — turn an old phone into an ambient status display on your LAN."
+    }
+  ]
+}

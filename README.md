@@ -1,8 +1,8 @@
-# agent-dashboard (working name)
+# agent-dashboard
 
-A glanceable, real-time dashboard for Claude Code sessions. Designed to be opened
-on any device on your LAN — an old smartphone on a charging stand makes a great
-ambient display.
+A glanceable, real-time dashboard for Claude Code sessions. Designed to be
+opened on any device on your LAN — an old smartphone on a charging stand
+makes a great ambient display.
 
 ```
 Claude Code event
@@ -17,164 +17,171 @@ Claude Code event
                                     browser tile UI
 ```
 
-## Quick start (~10 min)
+## Install
 
-### 1. Install dependencies (project-local venv)
+### As a Claude Code plugin (recommended)
 
-Homebrew Python on macOS blocks system-wide installs (PEP 668), so we use a
-project-local venv. Run this once from the project root:
-
-```bash
-cd /Users/martinyao/Workspace/agent-dashboard
-python3 -m venv .venv
-.venv/bin/pip install aiohttp qrcode
+```
+/plugin marketplace add kuaikuaikk/agent-dashboard
+/plugin install agent-dashboard
 ```
 
-`hook.sh` automatically uses `.venv/bin/python` when present.
+That's it. Hooks auto-wire, the daemon spawns on the first hook event, and
+the first run bootstraps a Python venv with `aiohttp` + `qrcode` (~10s,
+one-time). Run `/pair` inside any Claude Code session to add a device.
 
-### 2. Make the hook executable
+Requires: Python 3.11+ on PATH.
+
+### Manually (for development / no-plugin setup)
 
 ```bash
+git clone https://github.com/kuaikuaikk/agent-dashboard
+cd agent-dashboard
+python3 -m venv .venv
+.venv/bin/pip install aiohttp qrcode
 chmod +x hook.sh
 ```
 
-### 3. Wire up Claude Code hooks
+Then merge `hooks/hooks.json` into your `~/.claude/settings.json` by hand
+(replace `${CLAUDE_PLUGIN_ROOT}` with the absolute path to this directory).
 
-Merge the `hooks` block from `settings.local.json` into `~/.claude/settings.json`.
-If your settings.json has no `hooks` block, just copy:
+## Pair a device
 
-```bash
-cp settings.local.json ~/.claude/settings.json
+Once installed, run:
+
+```
+/pair
 ```
 
-Otherwise, merge by hand — each event in `settings.local.json` is independent
-and can be added one at a time.
+inside any Claude Code session. Safari (macOS) auto-opens with a QR code.
+Scan it with your phone — the page on the Mac switches to a green "✓ paired"
+state once consumed, and the link is then permanently spent.
 
-### 4. Use Claude Code
-
-The first hook event auto-spawns the daemon. Nothing else to start.
-
-### 5. Pair a device
-
-The daemon now requires auth — every device gets its own token. Add one with:
+Each pairing creates an independent device entry. Tokens are SHA-256 hashed
+on disk; the plaintext token is shown once and is **single-use** (re-using
+the same URL returns 403).
 
 ```bash
-.venv/bin/python daemon.py --pair "iPhone"
-```
-
-This prints a QR code and a URL like
-`http://<your-lan-ip>:8765/auth?token=<32-byte-secret>`.
-Scan the QR with your phone (or open the URL in any browser). The token is
-shown **once**; only its SHA-256 hash is persisted on disk.
-
-After scanning, the browser gets a 1-year httpOnly cookie and the dashboard
-is reachable at `http://<your-lan-ip>:8765/` for that device.
-
-### 6. (Optional) Add to Home Screen
-
-On iOS Safari, tap **Share → Add to Home Screen** for a fullscreen kiosk-style
-launcher. Pair with Guided Access (Settings → Accessibility) to lock the phone
-to this page and turn it into a dedicated ambient display.
-
-## Device management
-
-```bash
-# list all paired devices (id, name, created, last_seen, user-agent)
+# list / revoke without /pair:
 .venv/bin/python daemon.py --list
-
-# add another device (auto-named if no name given)
-.venv/bin/python daemon.py --pair "MacBook"
-
-# revoke one device by id prefix (use --list to see ids)
-.venv/bin/python daemon.py --revoke f56f
+.venv/bin/python daemon.py --revoke <id-prefix>
 ```
 
-Revoking removes the device's hash from `devices.json`; its token immediately
-fails auth on every endpoint, without affecting any other paired device.
+## HTTPS (recommended for iOS ambient use)
 
-## File layout
+iOS Safari's Wake Lock API only works in a secure context. Plain HTTP on a
+LAN IP won't keep the screen on. Two options:
+
+**Tailscale (easiest):**
+
+```bash
+brew install --cask tailscale-app
+# log in on Mac and iPhone with the same account
+# enable HTTPS in https://login.tailscale.com/admin/dns
+tailscale serve --bg http://127.0.0.1:8765
+```
+
+`daemon.py --pair` then auto-detects the Tailscale hostname and embeds an
+HTTPS URL in the QR. Real Let's Encrypt cert, no profile install.
+
+**Other options:** set `DASHBOARD_PUBLIC_URL=https://my.example.com` to
+override (e.g., behind Caddy or a self-signed cert with an iOS trust
+profile).
+
+Without HTTPS, the dashboard still works; only the keep-awake feature
+silently degrades.
+
+## (Optional) Add to Home Screen
+
+On iOS Safari, tap **Share → Add to Home Screen** for a fullscreen,
+kiosk-style launcher. Pair with Guided Access (Settings → Accessibility) to
+lock the phone to this page.
+
+## Plugin layout
 
 ```
 agent-dashboard/
-├── daemon.py            # hook handler + long-running server + pair/list/revoke CLI
-├── hook.sh              # thin shim that calls `daemon.py --hook`
-├── index.html           # single-file frontend (no build step)
-├── settings.local.json  # snippet to merge into ~/.claude/settings.json
-├── devices.json         # paired-device list (token hashes only; chmod 600)  [gitignored]
-├── .venv/               # local Python env  [gitignored]
+├── .claude-plugin/
+│   ├── plugin.json        # manifest
+│   └── marketplace.json   # so `/plugin marketplace add` finds the plugin
+├── hooks/
+│   └── hooks.json         # auto-wires 7 hook events to hook.sh
+├── commands/
+│   └── pair.md            # /pair slash command
+├── daemon.py              # hook handler + server + pair/list/revoke CLI
+├── hook.sh                # auto-bootstraps venv, then execs daemon.py --hook
+├── index.html             # single-file frontend (no build step)
+├── devices.json           # paired-device list (token hashes; gitignored)
+├── .venv/                 # local Python env (gitignored)
+├── LICENSE
 └── README.md
 ```
 
-## State machine: Claude Code events → tile state
+## State machine
 
-| Event                       | Tile state           | Color       | Pulses |
-|-----------------------------|----------------------|-------------|--------|
-| SessionStart                | idle                 | grey        |        |
-| UserPromptSubmit / PostToolUse | thinking          | cyan        | yes    |
-| PreToolUse                  | tool_use             | yellow      | yes    |
-| Notification + "permission/approve" | awaiting_approval | purple | yes    |
-| Notification + "waiting/idle/input" | idle_waiting    | amber       | yes    |
-| Notification (other)        | notification         | orange      |        |
-| Stop                        | done                 | green       |        |
-| SessionEnd                  | (tile removed)       | —           |        |
+| Hook event                          | Tile state           | Color  | Pulses |
+|-------------------------------------|----------------------|--------|--------|
+| SessionStart                        | idle                 | grey   |        |
+| UserPromptSubmit / PostToolUse      | thinking             | cyan   | yes    |
+| PreToolUse                          | tool_use             | yellow | yes    |
+| Notification + "permission/approve" | awaiting_approval    | purple | yes    |
+| Notification + "waiting/idle/input" | idle_waiting         | amber  | yes    |
+| Notification (other)                | notification         | orange |        |
+| Stop                                | done                 | green  |        |
+| SessionEnd                          | (tile removed)       | —      |        |
 
-`error` (red) is defined in CSS but no hook event currently maps to it.
+Pulses auto-decay after 5 min of no further activity so the tile stops
+nagging. The frontend also dims itself after extended idle and shifts ±2px
+every minute to prevent OLED burn-in.
 
 ## Runtime files
 
-| Path                                       | Purpose |
-|--------------------------------------------|---------|
-| `/tmp/agent-dashboard-state.json`          | current state, indexed by Claude session id |
-| `/tmp/agent-dashboard.lock`                | flock around state-file read-modify-write |
-| `/tmp/agent-dashboard-spawn.lock`          | flock around daemon spawn (prevents double-start) |
-| `/tmp/agent-dashboard-devices.lock`        | flock around devices.json mutations |
-| `/tmp/agent-dashboard-daemon.pid`          | running daemon's PID |
-| `/tmp/agent-dashboard-daemon.log`          | daemon stdout/stderr (plus hook errors) |
-| `./devices.json`                           | paired devices (persistent, in project dir) |
+| Path                                | Purpose |
+|-------------------------------------|---------|
+| `/tmp/agent-dashboard-state.json`   | current state, indexed by Claude session id |
+| `/tmp/agent-dashboard.lock`         | flock around state-file write |
+| `/tmp/agent-dashboard-spawn.lock`   | flock around daemon spawn |
+| `/tmp/agent-dashboard-devices.lock` | flock around devices.json mutations |
+| `/tmp/agent-dashboard-daemon.pid`   | running daemon's PID |
+| `/tmp/agent-dashboard-daemon.log`   | daemon stdout/stderr |
+| `/tmp/agent-dashboard-bootstrap.log`| first-run venv setup log |
+| `./devices.json`                    | paired devices (persistent, in plugin dir) |
 
-## MVP caveats
+## Caveats
 
-- **No HTTPS yet.** Auth tokens travel over plaintext HTTP on your LAN. Fine on
-  a trusted home WiFi; not safe on coffee-shop networks. Tailscale or mkcert
-  would fix this.
-- **All devices have full read access.** Scopes (`read:state` vs `write:approve`)
-  aren't enforced yet — the field exists in devices.json but every authenticated
-  device sees everything.
-- **Daemon auto-exits after 5h idle.** Next hook event respawns it (~1.5s); the
-  page reconnects with exponential backoff.
-- **State persists in `/tmp`**, wiped on reboot. Sessions repopulate as you use
+- **All paired devices have full read access.** The `scopes` field exists
+  but isn't enforced yet — every authenticated device sees every session.
+- **Daemon auto-exits after 5h idle.** Next hook event respawns it (~1.5s).
+- **State persists in `/tmp`**, wiped on reboot. Re-populates as you use
   Claude Code.
 - **Single laptop only.** No multi-machine aggregation yet.
-- **Claude Code only.** Codex / opencode / multi-CLI adapters are future work.
+- **Claude Code only.** Codex / opencode adapters are future work.
 
 ## Manual sanity test
 
 ```bash
-# simulate a hook event without Claude Code
-echo '{"hook_event_name":"UserPromptSubmit","session_id":"test-1","cwd":"/tmp"}' \
+echo '{"hook_event_name":"UserPromptSubmit","session_id":"test","cwd":"/tmp"}' \
   | ./hook.sh
-
-# inspect the state file
-cat /tmp/agent-dashboard-state.json
-
-# inspect daemon activity
+cat /tmp/agent-dashboard-state.json   # should show a test session
 tail -f /tmp/agent-dashboard-daemon.log
 ```
-
-If `cat` prints a `test-1` session entry, the hook → state path works.
 
 ## Reset / panic buttons
 
 ```bash
-# kick all paired devices, start fresh
+# kick all paired devices
 rm devices.json
 
-# wipe all live session state (page goes empty until next hook)
+# wipe live session state
 rm /tmp/agent-dashboard-state.json
 
 # stop the daemon
 lsof -ti:8765 | xargs kill
 
-# completely start over: drop venv, devices, state, then redo step 1
+# completely start over
 rm -rf .venv devices.json /tmp/agent-dashboard-*
 ```
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

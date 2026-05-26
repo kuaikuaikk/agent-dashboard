@@ -1,0 +1,13 @@
+{
+  "name": "agent-dashboard",
+  "version": "0.1.0",
+  "description": "Glanceable real-time dashboard for Claude Code sessions — turn an old phone into an ambient status display on your LAN.",
+  "author": {
+    "name": "Martin Yao",
+    "url": "https://github.com/kuaikuaikk"
+  },
+  "homepage": "https://github.com/kuaikuaikk/agent-dashboard",
+  "repository": "https://github.com/kuaikuaikk/agent-dashboard",
+  "license": "MIT",
+  "keywords": ["dashboard", "ambient-display", "hooks", "websocket", "status"]
+}
