@@ -333,13 +333,10 @@ function projectName(cwd) {
 }
 
 function prettyCwd(p) {
-  if (!p) return "";
-  const home = "/Users/";
-  if (p.startsWith(home)) {
-    const rest = p.slice(home.length).split("/").slice(1).join("/");
-    return rest ? "~/" + rest : "~";
-  }
-  return p;
+  // Desensitized: show only the leaf directory name, never the full path.
+  // Avoids leaking surrounding org/customer/project structure to anyone
+  // who can see the screen.
+  return projectName(p);
 }
 
 function escapeHtml(s) {
@@ -411,7 +408,7 @@ function render(state) {
           <div class="title">${title}</div>
           <div class="badge">${label}</div>
         </div>
-        <div class="cwd">${cwd}</div>
+        ${cwd && cwd !== title ? `<div class="cwd">${cwd}</div>` : ""}
         ${message ? `<div class="message">${message}</div>` : ""}
         <div class="foot">
           <div class="left">

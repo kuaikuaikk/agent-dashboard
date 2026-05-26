@@ -1,5 +1,5 @@
 ---
-description: Generate a new agent-dashboard pairing QR (auto-opens in Safari)
+description: Pair a new device
 ---
 
 Run exactly this command, then briefly confirm to the user:
